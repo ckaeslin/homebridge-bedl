@@ -1,15 +1,10 @@
-var gpio = require('pi-gpio');
-var SerialPort = require('serialport');
 var Promise = require('bluebird');
-
-const serialPort = new SerialPort('/dev/ttyAMA0', {
-  baudrate: 9600,
-  stopbits: 1,
-  parity: 'none',
-  autoOpen: true,
-});
+var rp = require('request-promise');
 
 var Service, Characteristic;
+
+var LEDData = [];
+var logger;
 
 module.exports = function(homebridge) {
 	Service = homebridge.hap.Service;
@@ -18,139 +13,13 @@ module.exports = function(homebridge) {
 	homebridge.registerAccessory("homebridge-bedl", "BEDL", BEDLAccessory);
 }
 
-const openSerialPort = (tryNr = 0) => new Promise((resolve, reject) => {
-  serialPort.open((error) => {
-    if (error) {
-      if (tryNr < 4) return resolve(serialPort.close(() => openSerialPort(tryNr + 1)));
-      return reject(error);
-    }
-    return resolve();
-  });
-});
-
-const open13 = (tryNr = 0) => new Promise((resolve, reject) => {
-  gpio.open(13, 'output', (err13) => {
-    if (err13) {
-      if (tryNr < 4) return resolve(gpio.close(13, () => open13(tryNr + 1)));
-      return reject(err13);
-    }
-    return resolve();
-  });
-});
-
-const open11 = (tryNr = 0) => new Promise((resolve, reject) => {
-  gpio.open(11, 'output', (err11) => {
-    if (err11) {
-      if (tryNr < 4) return resolve(gpio.close(11, () => open11(tryNr + 1)));
-      return reject(err11);
-    }
-    return resolve();
-  });
-});
-
-const openAll = () => new Promise((resolve, reject) => {
-  open11()
-    .then(open13)
-    .then(resetLEDSelection)
-    .then(openSerialPort)
-    .then(() => {
-      console.log('OPEN, ready for LED control.');
-      return resolve();
-    })
-    .catch((err) => {
-      console.log('ERROR: Failed to open ports for LED!');
-      reject(err);
-    });
-});
-
-const clearScene = () => { clearInterval(sceneId); };
-const clone = (a) => JSON.parse(JSON.stringify(a));
-
-function LEDSetValueJob() {
-  const LEDDataTmp = clone(LEDData);
-  LEDData = [];
-  // eslint-disable-next-line new-cap
-  LEDSetValue(LEDDataTmp);
-}
-
-const iterator = (f) => {
-  console.log('iter');
-  return f();
-};
-
-const LEDSetValue = (commands) => {
-  if (commands.length > 0) {
-    Promise.resolve(commands.map((com) => applyLEDCommand(com.value, com.ledNr)))
-    .mapSeries(iterator)
-    .then(resetLEDSelection)
-    .catch((err) => {
-      console.log('ERROR:');
-      console.log(err);
-    });
-  }
-};
-
-const writeGPIO = (pin) => (value) => new Promise((resolve, reject) => {
-  gpio.write(pin, value, (err) => {
-    if (err) return reject(err);
-    return resolve();
-  });
-});
-
-const selectPort = (a, b) => writeGPIO(11)(a).then(writeGPIO(13)(b));
-
-const resetLEDSelection = () => selectPort(0, 0);
-
-
-const applyLEDCommand = (value, ledNr) => () => {
-  if ((value.indexOf('%') === 0 && value.length === 4) ||
-        (value.indexOf('S') === 0 && value.length === 13)) {
-    if (ledNr === 1) {
-      return selectPort(0, 1)
-              .then(writeSerial(value))
-              .then(drain);
-    } else if (ledNr === 2) {
-      return selectPort(1, 0)
-              .then(writeSerial(value))
-              .then(drain);
-    } else if (ledNr === 3) {
-      return selectPort(1, 1)
-              .then(writeSerial(value))
-              .then(drain);
-    }
-    return Promise.reject('wrong LED Nr');
-  }
-  return Promise.reject('wrong command');
-};
-
-const writeSerial = (value) => new Promise((resolve, reject) => {
-  setTimeout(() => serialPort.write(value, (errWrite, results) => {
-    if (errWrite) return reject(errWrite);
-    return resolve(results);
-  }), 5);
-});
-
-const drain = () => new Promise((resolve, reject) => {
-  setTimeout(() => serialPort.drain((errDrain) => {
-    if (errDrain) return reject(errDrain);
-    setTimeout(() => resolve(), 5);
-  }), 5);
-});
-
-
-
 function BEDLAccessory(log, config) {
 	this.log = log;
-	this.name = config["name"]
-	this.address = config["address"]
+  logger = this.log;
+	this.name = config["name"];
+  this.ledNr = config["number"];
 
-  openAll()
-    .then(() => {
-      setInterval(LEDSetValueJob, 50);
-    })
-    .catch((err) => {
-      console.log(err);
-    });
+  LEDData = [];
 
   /**
    * Initialise the HAP Lightbulb service and configure characteristic bindings
@@ -194,16 +63,40 @@ BEDLAccessory.prototype.identify = function(callback) {
  **/
 BEDLAccessory.prototype.setPowerState = function(powerState, callback) {
 	this.powerState = powerState;
-	this.writeToBulb(function(){
-		callback(null);
-	});
+	if (powerState) {
+    this.setBrightness(100, callback);
+  } else {
+    this.setBrightness(0, callback);
+  }
 }
 
 BEDLAccessory.prototype.setBrightness = function(value, callback) {
 	this.brightness = value;
-	this.writeToBulb(function(){
-		callback(null);
-	});
+	const com = {};
+  com.ledNr = 1;
+  com.value = '%' + this.dec2hex(this.brightness*10);
+
+  var options = {
+      method: 'POST',
+      uri: 'http://localhost:3000/commands',
+      body: {
+          'commands': [
+            com
+          ],
+      },
+      json: true // Automatically stringifies the body to JSON
+  };
+
+  rp(options)
+      .then(function (parsedBody) {
+          // POST succeeded...
+      })
+      .catch(function (err) {
+          // POST failed...
+          this.log(err);
+      });
+
+	callback(null);
 }
 
 BEDLAccessory.prototype.setSaturation = function(value, callback) {
@@ -236,42 +129,39 @@ BEDLAccessory.prototype.getHue = function(callback) {
 	callback(this.hue);
 }
 
-
-/**
- * Functions for interacting directly with the lightbulb's RGB property
- **/
-BEDLAccessory.prototype.readFromBulb = function(callback) {
-	this.nobleCharacteristic.read(function(error, buffer) {
-		if (error) {
-			this.log.warn("Read from bluetooth characteristic failed | " + error);
-			callback(error);
-			return;
-		}
-		var r = buffer.readUInt8(1);
-		var g = buffer.readUInt8(2);
-		var b = buffer.readUInt8(3);
-
-		this.log.info("Get | " + r + " " + g + " " + b);
-		var hsv = this.rgb2hsv(r, g, b);
-		this.hue = hsv.h;
-		this.saturation = hsv.s;
-		this.brightness = hsv.v;
-		callback(null);
-	}.bind(this))
-}
-
 BEDLAccessory.prototype.writeToBulb = function(callback) {
-	var rgb = this.hsv2rgb1000(this.hue, this.saturation, this.brightness);
+	var rgb = this.hsv2rgb1000(this.hue, this.saturation, 100);
 	this.log.info("Set | "
 		+ rgb.r + " " + rgb.g + " " + rgb.b
 		+ " (" + this.powerState ? "On" : "Off" + ")");
 
   const com = {};
   com.ledNr = 1;
-  com.value = 'S' + BEDLAccessory.prototype.dec2hex(rgb.r) +
-                    BEDLAccessory.prototype.dec2hex(rgb.g) +
-                    BEDLAccessory.prototype.dec2hex(rgb.b) + '000';
-  LEDData.push(com);
+  com.value = 'S' + this.dec2hex(rgb.r) +
+                    this.dec2hex(rgb.g) +
+                    this.dec2hex(rgb.b) +
+                    '000';
+
+  var options = {
+      method: 'POST',
+      uri: 'http://localhost:3000/commands',
+      body: {
+          'commands': [
+            com
+          ],
+      },
+      json: true // Automatically stringifies the body to JSON
+  };
+
+  rp(options)
+      .then(function (parsedBody) {
+          // POST succeeded...
+      })
+      .catch(function (err) {
+          // POST failed...
+          this.log(err);
+      });
+
 	callback();
 }
 
