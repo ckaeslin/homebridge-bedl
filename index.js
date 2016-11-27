@@ -17,7 +17,7 @@ function BEDLAccessory(log, config) {
 	this.log = log;
   logger = this.log;
 	this.name = config["name"];
-  this.ledNr = config["number"];
+  this.ledNr = config["number"] || 1;
 
   LEDData = [];
 
@@ -73,7 +73,7 @@ BEDLAccessory.prototype.setPowerState = function(powerState, callback) {
 BEDLAccessory.prototype.setBrightness = function(value, callback) {
 	this.brightness = value;
 	const com = {};
-  com.ledNr = 1;
+  com.ledNr = this.ledNr;
   com.value = '%' + this.dec2hex(this.brightness*10);
 
   var options = {
