@@ -140,7 +140,7 @@ BEDLAccessory.prototype.writeToBulb = function(callback) {
   com.value = 'S' + this.dec2hex(rgb.r) +
                     this.dec2hex(rgb.g) +
                     this.dec2hex(rgb.b) +
-                    '000';
+                    '3E8';
 
   var options = {
       method: 'POST',
