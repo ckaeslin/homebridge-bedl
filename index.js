@@ -1,47 +1,151 @@
 var Promise = require('bluebird');
 var rp = require('request-promise');
+var fs = require('fs');
+var util = require('util');
 
-var Service, Characteristic;
+var Accessory, Characteristic, Service, UUIDGen;
 
 var LEDData = [];
-var logger;
 
-module.exports = function(homebridge) {
-	Service = homebridge.hap.Service;
-	Characteristic = homebridge.hap.Characteristic;
+module.exports = function (homebridge) {
+    Accessory = homebridge.platformAccessory;
+    Characteristic = homebridge.hap.Characteristic;
+    Service = homebridge.hap.Service;
+    UUIDGen = homebridge.hap.uuid;
 
-	homebridge.registerAccessory("homebridge-bedl", "BEDL", BEDLAccessory);
+    homebridge.registerPlatform("homebridge-bedl", "BEDL", BEDLPlatform, true);
+};
+
+
+function BEDLPlatform(log, config, api) {
+    this.config = config || {};
+
+    this.api = api;
+    this.accessories = {};
+    this.log = log;
+
+    this.ledAmount = config.ledAmount;
+
+    this.setup();
+
+    setInterval(sendValueJob, 50);
 }
 
-function BEDLAccessory(log, config) {
-	this.log = log;
-  logger = this.log;
-	this.name = config["name"];
-  this.ledNr = config["number"] || 1;
+const clone = (a) => JSON.parse(JSON.stringify(a));
 
+function sendValueJob() {
+  const LEDDataTmp = clone(LEDData);
   LEDData = [];
+
+  var options = {
+      method: 'POST',
+      uri: 'http://localhost:3000/commands',
+      body: {
+          'commands': LEDDataTmp,
+      },
+      json: true // Automatically stringifies the body to JSON
+  };
+
+  rp(options)
+      .then(function (parsedBody) {
+          // POST succeeded...
+      })
+      .catch(function (err) {
+          // POST failed...
+          this.log(err);
+      });
+
+}
+
+/*BEDLPlatform.removeAccessory = function() {
+  this.log("Remove Accessory");
+  this.api.unregisterPlatformAccessories("homebridge-samplePlatform", "SamplePlatform", this.accessories);
+
+  this.accessories = [];
+}*/
+
+BEDLPlatform.prototype.addAccessory = function(uuid, name, ledNr) {
+    this.log("Found: %s [ledNr %d]", name, ledNr);
+
+    var accessory = new Accessory(name, uuid);
+
+    accessory
+        .getService(Service.AccessoryInformation)
+        .setCharacteristic(Characteristic.Manufacturer, "BEDL");
+
+    accessory
+        .addService(Service.Lightbulb);
+
+    this.accessories[accessory.UUID] = new BEDLAccessory(this.log, accessory, ledNr);
+
+    this.api.registerPlatformAccessories("homebridge-bedl", "BEDL", [accessory]);
+
+};
+
+BEDLPlatform.prototype.configureAccessory = function(accessory) {
+    this.accessories[accessory.UUID] = accessory;
+};
+
+
+BEDLPlatform.prototype.setup = function() {
+  if(fs.existsSync('/var/homebridge/bedl-accessories.json')) {
+    var file = fs.readFileSync('/var/homebridge/bedl-accessories.json', 'utf-8');
+    this.accessories = file ? JSON.parse(file) : [];
+    this.log(this.accessories);
+  } else {
+    this.accessories = [];
+  }
+
+
+  for(let idx = 1; idx <= this.ledAmount; idx++) {
+    var name = 'bedl-led-nr-' + idx;
+    var uuid = UUIDGen.generate(name);
+    this.log(uuid);
+    var accessory = this.accessories[uuid];
+
+    if (accessory === undefined) {
+        this.addAccessory(uuid, name, idx);
+    }
+    else if (accessory instanceof Accessory) {
+        this.accessories[accessory.UUID] = new BEDLAccessory(this.log, accessory, idx);
+    }
+  }
+  fs.writeFileSync('/var/homebridge/bedl-accessories.json', JSON.stringify(this.accessories,  null, 2) , 'utf-8');
+}
+
+
+function BEDLAccessory(log, accessory, ledNr) {
+	this.log = log;
+  this.accessory = accessory;
+  this.ledNr = ledNr;
+  LEDData = [];
+
+  this.accessory.on('identify', function(paired, callback) {
+        self.log("%s - identify", self.accessory.displayName);
+        callback();
+  });
 
   /**
    * Initialise the HAP Lightbulb service and configure characteristic bindings
    */
-  this.lightService = new Service.Lightbulb(this.name);
+  var service = this.accessory.getService(Service.Lightbulb);
 
-  this.lightService
+  service
     .getCharacteristic(Characteristic.On) // BOOL
     .on('set', this.setPowerState.bind(this))
     .on('get', this.getPowerState.bind(this));
 
-  this.lightService
+  service
     .addCharacteristic(new Characteristic.Brightness()) // INT (0-100)
     .on('set', this.setBrightness.bind(this))
     .on('get', this.getBrightness.bind(this));
 
-  this.lightService
+  service
     .addCharacteristic(new Characteristic.Saturation()) // FLOAT (0-100)
     .on('set', this.setSaturation.bind(this))
     .on('get', this.getSaturation.bind(this));
 
-  this.lightService
+  service
     .addCharacteristic(new Characteristic.Hue()) // FLOAT (0-360)
     .on('set', this.setHue.bind(this))
     .on('get', this.getHue.bind(this));
@@ -49,13 +153,31 @@ function BEDLAccessory(log, config) {
 }
 
 BEDLAccessory.prototype.getServices = function() {
-	return [this.lightService];
-}
+	var lightbulbService = new Service.Lightbulb(this.accessory.displayName);
+  if (logmore) {
+      this.log("Setting services for: " + this.accessory.displayName);
+  }
+  lightbulbService
+    .getCharacteristic(Characteristic.On) // BOOL
+    .on('set', this.setPowerState.bind(this))
+    .on('get', this.getPowerState.bind(this));
 
-BEDLAccessory.prototype.identify = function(callback) {
-	this.log("[" + this.name + "] Identify requested!");
-	// TODO: This could send a sequence of colour flashes to the bulb
-	callback(null);
+  lightbulbService
+    .addCharacteristic(new Characteristic.Brightness()) // INT (0-100)
+    .on('set', this.setBrightness.bind(this))
+    .on('get', this.getBrightness.bind(this));
+
+  lightbulbService
+    .addCharacteristic(new Characteristic.Saturation()) // FLOAT (0-100)
+    .on('set', this.setSaturation.bind(this))
+    .on('get', this.getSaturation.bind(this));
+
+  lightbulbService
+    .addCharacteristic(new Characteristic.Hue()) // FLOAT (0-360)
+    .on('set', this.setHue.bind(this))
+    .on('get', this.getHue.bind(this));
+
+  return [lightbulbService];
 }
 
 /**
@@ -76,25 +198,7 @@ BEDLAccessory.prototype.setBrightness = function(value, callback) {
   com.ledNr = this.ledNr;
   com.value = '%' + this.dec2hex(this.brightness*10);
 
-  var options = {
-      method: 'POST',
-      uri: 'http://localhost:3000/commands',
-      body: {
-          'commands': [
-            com
-          ],
-      },
-      json: true // Automatically stringifies the body to JSON
-  };
-
-  rp(options)
-      .then(function (parsedBody) {
-          // POST succeeded...
-      })
-      .catch(function (err) {
-          // POST failed...
-          this.log(err);
-      });
+  LEDData.push(com);
 
 	callback(null);
 }
@@ -141,28 +245,8 @@ BEDLAccessory.prototype.writeToBulb = function(callback) {
                     this.dec2hex(rgb.g) +
                     this.dec2hex(rgb.b) +
                     '3E8';
-
-  var options = {
-      method: 'POST',
-      uri: 'http://localhost:3000/commands',
-      body: {
-          'commands': [
-            com
-          ],
-      },
-      json: true // Automatically stringifies the body to JSON
-  };
-
-  rp(options)
-      .then(function (parsedBody) {
-          // POST succeeded...
-      })
-      .catch(function (err) {
-          // POST failed...
-          this.log(err);
-      });
-
-	callback();
+  LEDData.push(com);
+	callback(null);
 }
 
 
